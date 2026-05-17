@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Upwork Copilot",
+  "version": "1.0.0",
+  "description": "Auto-fill AI cover letters on Upwork proposal pages",
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": [
+    "https://www.upwork.com/*",
+    "http://localhost/*",
+    "https://*/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://www.upwork.com/ab/proposals/job/*/apply/*"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ]
+}

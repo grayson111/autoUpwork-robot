@@ -1,0 +1,15 @@
+[
+  {
+    "id": "demo-job-100",
+    "title": "Shopify + 3D product renders",
+    "description": "Fixed scope, Figma provided, no unlimited revisions.",
+    "budget": "$3,000",
+    "proposalsCount": 6,
+    "client": {
+      "isPaymentVerified": true,
+      "rating": 4.8,
+      "totalSpent": 85000
+    },
+    "skills": ["Shopify", "Blender"]
+  }
+]
