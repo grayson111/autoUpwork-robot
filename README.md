@@ -20,14 +20,17 @@ Telegram Bot [@MyAutoUpwork_bot](https://t.me/MyAutoUpwork_bot)：先发 `/start
 
 ## Apify Webhook
 
-在 Apify Actor `neatrat/upwork-job-scraper` 运行完成后，将 Webhook 指向：
+在 Apify 集成 Webhook 中配置 **Run succeeded** 事件，URL：
 
 ```
 POST https://你的域名/api/webhook/upwork-jobs
-Header: x-webhook-secret: <WEBHOOK_SECRET>   # 若已配置
 ```
 
-Body 支持：任务数组、`{ items: [...] }` 或单条任务对象。
+服务端会 **立即返回 200**，再根据 `actorRunId` 调用 Apify API 拉取 Dataset 任务并处理（避免 Apify 因超时/400 疯狂重试）。
+
+可选 Header：`x-webhook-secret: <WEBHOOK_SECRET>`（若在 `.env` 配置了 `WEBHOOK_SECRET`）
+
+也支持直接 POST 任务数组、`{ items: [...] }`。
 
 ## Chrome 插件
 

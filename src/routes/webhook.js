@@ -1,33 +1,50 @@
 const express = require('express');
-const { extractJobsFromPayload } = require('../utils/jobNormalizer');
-const { processJobs } = require('../services/jobProcessor');
+const apify = require('../services/apify');
 const { webhookAuth } = require('../middleware/webhookAuth');
+const { runWebhookInBackground } = require('../services/webhookHandler');
 
 const router = express.Router();
 
-router.post('/upwork-jobs', webhookAuth, async (req, res) => {
-  try {
-    const jobs = extractJobsFromPayload(req.body);
-    if (jobs.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'No valid jobs in payload (need id/jobId field)',
-      });
-    }
+/** Apify health ping — optional GET to verify URL is reachable */
+router.get('/upwork-jobs', (_req, res) => {
+  res.status(200).json({ ok: true, endpoint: 'POST /api/webhook/upwork-jobs' });
+});
 
-    const results = await processJobs(jobs);
-    const summary = {
-      total: results.length,
-      notified: results.filter((r) => r.status === 'notified').length,
-      filtered: results.filter((r) => r.status === 'filtered').length,
-      skipped: results.filter((r) => r.status === 'skipped').length,
-    };
+router.post('/upwork-jobs', webhookAuth, (req, res) => {
+  const body = req.body;
 
-    res.json({ success: true, summary, results });
-  } catch (err) {
-    console.error('[webhook]', err);
-    res.status(500).json({ success: false, error: err.message });
+  if (apify.isActorRunWebhook(body)) {
+    const runId = apify.extractActorRunId(body);
+    runWebhookInBackground(body);
+    return res.status(200).json({
+      success: true,
+      accepted: true,
+      runId,
+      message: 'Apify run acknowledged, processing in background',
+    });
   }
+
+  const hasDirectJobs =
+    Array.isArray(body) ||
+    Array.isArray(body?.items) ||
+    Array.isArray(body?.jobs) ||
+    Array.isArray(body?.data);
+
+  if (hasDirectJobs) {
+    runWebhookInBackground(body);
+    return res.status(200).json({
+      success: true,
+      accepted: true,
+      message: 'Job batch acknowledged, processing in background',
+    });
+  }
+
+  console.warn('[webhook] unrecognized payload keys:', Object.keys(body || {}));
+  return res.status(200).json({
+    success: true,
+    accepted: true,
+    message: 'Payload acknowledged (unrecognized format, no retry needed)',
+  });
 });
 
 module.exports = router;

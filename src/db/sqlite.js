@@ -18,6 +18,7 @@ const defaultStore = () => ({
   },
   settings: {},
   jobs: {},
+  processed_runs: {},
 });
 
 function readStore() {
@@ -31,6 +32,7 @@ function readStore() {
       duty: { ...defaultStore().duty, ...parsed.duty },
       settings: parsed.settings || {},
       jobs: parsed.jobs || {},
+      processed_runs: parsed.processed_runs || {},
     };
   } catch {
     return defaultStore();
@@ -99,6 +101,25 @@ function setSetting(key, value) {
   writeStore(store);
 }
 
+function isRunProcessed(runId) {
+  const store = readStore();
+  return Boolean(store.processed_runs?.[runId]);
+}
+
+function markRunProcessed(runId) {
+  const store = readStore();
+  if (!store.processed_runs) store.processed_runs = {};
+  store.processed_runs[runId] = new Date().toISOString();
+  const ids = Object.keys(store.processed_runs);
+  if (ids.length > 200) {
+    const sorted = ids.sort(
+      (a, b) => new Date(store.processed_runs[b]) - new Date(store.processed_runs[a])
+    );
+    sorted.slice(100).forEach((id) => delete store.processed_runs[id]);
+  }
+  writeStore(store);
+}
+
 module.exports = {
   getDutyStatus,
   setDutyStatus,
@@ -107,4 +128,6 @@ module.exports = {
   getSetting,
   setSetting,
   purgeExpiredJobs,
+  isRunProcessed,
+  markRunProcessed,
 };
