@@ -55,5 +55,7 @@ localStorage.setItem('upwork_copilot_api', 'https://你的域名');
 
 ## Hostinger 部署
 
-上传项目后执行 `npm install --production`，用 Node.js 应用或 PM2 启动 `npm start`，将 `BASE_URL` 设为公网 HTTPS 地址。
+数据存储为 `data/store.json`（纯 JSON，无 native 依赖，适配 Hostinger 共享 Node 构建环境）。
+
+上传项目后执行 `npm install`，用 Node.js 应用启动 `npm start`，将 `BASE_URL` 设为公网 HTTPS 地址。Build command 填：`npm install`（无需 `better-sqlite3` 编译）。
 "# autoUpwork-robot" 

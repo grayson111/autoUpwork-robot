@@ -1,123 +1,105 @@
+/**
+ * JSON file storage (no native modules — works on Hostinger shared Node hosting).
+ */
 const fs = require('fs');
 const path = require('path');
-const Database = require('better-sqlite3');
-const config = require('../config');
 
-const dataDir = path.join(__dirname, '../../data');
-if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+const dataDir = process.env.DATA_DIR || path.join(__dirname, '../../data');
+const storePath = path.join(dataDir, 'store.json');
 
-const dbPath = path.join(dataDir, 'upwork.db');
-const db = new Database(dbPath);
+if (!fs.existsSync(dataDir)) {
+  fs.mkdirSync(dataDir, { recursive: true });
+}
 
-db.pragma('journal_mode = WAL');
+const defaultStore = () => ({
+  duty: {
+    is_on_duty: false,
+    last_toggle_time: new Date().toISOString(),
+  },
+  settings: {},
+  jobs: {},
+});
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS duty_status (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    is_on_duty INTEGER NOT NULL DEFAULT 0,
-    last_toggle_time TEXT NOT NULL
-  );
+function readStore() {
+  try {
+    if (!fs.existsSync(storePath)) return defaultStore();
+    const raw = fs.readFileSync(storePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return {
+      ...defaultStore(),
+      ...parsed,
+      duty: { ...defaultStore().duty, ...parsed.duty },
+      settings: parsed.settings || {},
+      jobs: parsed.jobs || {},
+    };
+  } catch {
+    return defaultStore();
+  }
+}
 
-  CREATE TABLE IF NOT EXISTS jobs (
-    job_id TEXT PRIMARY KEY,
-    title TEXT,
-    budget TEXT,
-    proposals_count INTEGER,
-    score REAL,
-    reason_low_effort TEXT,
-    reason_high_pay TEXT,
-    cover_letter_preview TEXT,
-    cover_letter_full TEXT,
-    apply_url TEXT,
-    raw_json TEXT,
-    created_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_jobs_expires ON jobs(expires_at);
-
-  CREATE TABLE IF NOT EXISTS app_settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-  );
-`);
-
-const initDuty = db.prepare(`
-  INSERT OR IGNORE INTO duty_status (id, is_on_duty, last_toggle_time)
-  VALUES (1, 0, ?)
-`);
-
-initDuty.run(new Date().toISOString());
+function writeStore(store) {
+  const tmp = `${storePath}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(store, null, 2), 'utf8');
+  fs.renameSync(tmp, storePath);
+}
 
 function getDutyStatus() {
-  const row = db.prepare('SELECT is_on_duty, last_toggle_time FROM duty_status WHERE id = 1').get();
+  const { duty } = readStore();
   return {
-    is_on_duty: Boolean(row.is_on_duty),
-    last_toggle_time: row.last_toggle_time,
+    is_on_duty: Boolean(duty.is_on_duty),
+    last_toggle_time: duty.last_toggle_time,
   };
 }
 
 function setDutyStatus(isOnDuty) {
-  const now = new Date().toISOString();
-  db.prepare(`
-    UPDATE duty_status SET is_on_duty = ?, last_toggle_time = ? WHERE id = 1
-  `).run(isOnDuty ? 1 : 0, now);
+  const store = readStore();
+  store.duty = {
+    is_on_duty: Boolean(isOnDuty),
+    last_toggle_time: new Date().toISOString(),
+  };
+  writeStore(store);
   return getDutyStatus();
 }
 
 function purgeExpiredJobs() {
+  const store = readStore();
   const now = new Date().toISOString();
-  return db.prepare('DELETE FROM jobs WHERE expires_at < ?').run(now).changes;
+  let removed = 0;
+  for (const [id, job] of Object.entries(store.jobs)) {
+    if (job.expires_at && job.expires_at < now) {
+      delete store.jobs[id];
+      removed += 1;
+    }
+  }
+  if (removed > 0) writeStore(store);
+  return removed;
 }
 
 function saveJob(record) {
   purgeExpiredJobs();
-  db.prepare(`
-    INSERT INTO jobs (
-      job_id, title, budget, proposals_count, score,
-      reason_low_effort, reason_high_pay,
-      cover_letter_preview, cover_letter_full, apply_url, raw_json,
-      created_at, expires_at
-    ) VALUES (
-      @job_id, @title, @budget, @proposals_count, @score,
-      @reason_low_effort, @reason_high_pay,
-      @cover_letter_preview, @cover_letter_full, @apply_url, @raw_json,
-      @created_at, @expires_at
-    )
-    ON CONFLICT(job_id) DO UPDATE SET
-      title = excluded.title,
-      budget = excluded.budget,
-      proposals_count = excluded.proposals_count,
-      score = excluded.score,
-      reason_low_effort = excluded.reason_low_effort,
-      reason_high_pay = excluded.reason_high_pay,
-      cover_letter_preview = excluded.cover_letter_preview,
-      cover_letter_full = excluded.cover_letter_full,
-      apply_url = excluded.apply_url,
-      raw_json = excluded.raw_json,
-      expires_at = excluded.expires_at
-  `).run(record);
+  const store = readStore();
+  store.jobs[record.job_id] = { ...record };
+  writeStore(store);
 }
 
 function getJob(jobId) {
   purgeExpiredJobs();
-  return db.prepare('SELECT * FROM jobs WHERE job_id = ?').get(jobId);
+  const store = readStore();
+  return store.jobs[jobId] || null;
 }
 
 function getSetting(key) {
-  const row = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key);
-  return row?.value || '';
+  const store = readStore();
+  return store.settings[key] || '';
 }
 
 function setSetting(key, value) {
-  db.prepare(`
-    INSERT INTO app_settings (key, value) VALUES (?, ?)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value
-  `).run(key, value);
+  const store = readStore();
+  store.settings[key] = String(value);
+  writeStore(store);
 }
 
 module.exports = {
-  db,
   getDutyStatus,
   setDutyStatus,
   saveJob,
