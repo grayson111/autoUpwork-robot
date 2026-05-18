@@ -3,11 +3,13 @@ const { handleTelegramWebhook, verifyTelegramWebhookSecret } = require('../servi
 
 const router = express.Router();
 
-router.post('/webhook', (req, res) => {
+router.post('/webhook', async (req, res) => {
   if (!verifyTelegramWebhookSecret(req)) {
     return res.status(403).json({ ok: false, error: 'Invalid telegram webhook secret' });
   }
   try {
+    const { ensureTelegramActive } = require('../services/telegram');
+    await ensureTelegramActive();
     handleTelegramWebhook(req.body);
   } catch (err) {
     console.error('[telegram] webhook handler:', err.message);

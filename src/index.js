@@ -9,7 +9,7 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (err) => {
   console.error('[fatal] unhandledRejection:', err?.message || err);
 });
-const { startTelegram, useWebhookMode } = require('./services/telegram');
+const { startTelegram, ensureTelegramActive, getTransportMode } = require('./services/telegram');
 const { purgeExpiredJobs } = require('./db/sqlite');
 const webhookRouter = require('./routes/webhook');
 const proposalRouter = require('./routes/proposal');
@@ -26,6 +26,13 @@ app.use(
 );
 
 app.use(express.json({ limit: '2mb' }));
+
+app.use((req, _res, next) => {
+  if (req.path !== '/health') {
+    ensureTelegramActive().catch(() => {});
+  }
+  next();
+});
 
 app.use(healthRouter);
 app.use('/api/telegram', telegramRouter);
@@ -46,6 +53,6 @@ purgeExpiredJobs();
 app.listen(config.port, () => {
   console.log(`Upwork Robot listening on port ${config.port}`);
   console.log(`Base URL: ${config.baseUrl}`);
-  console.log(`Telegram mode: ${useWebhookMode() ? 'webhook' : 'polling'}`);
+  console.log(`Telegram mode: ${getTransportMode()}`);
   startTelegram().catch((err) => console.error('[telegram] start failed:', err.message));
 });

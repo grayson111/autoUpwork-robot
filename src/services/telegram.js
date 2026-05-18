@@ -20,11 +20,23 @@ const apify = require('./apify');
 const startedAt = Date.now();
 let bot = null;
 let commandsRegistered = false;
+let ensurePromise = null;
 
 function useWebhookMode() {
   if (process.env.TELEGRAM_USE_POLLING === 'true') return false;
   if (process.env.TELEGRAM_USE_WEBHOOK === 'false') return false;
   return config.baseUrl.startsWith('https://');
+}
+
+function getTransportMode() {
+  if (process.env.TELEGRAM_USE_POLLING === 'true') return 'polling';
+  const override = getSetting('telegram_transport');
+  if (override === 'polling' || override === 'webhook') return override;
+  return useWebhookMode() ? 'webhook' : 'polling';
+}
+
+function isPollingActive() {
+  return getTransportMode() === 'polling';
 }
 
 function getWebhookUrl() {
@@ -64,7 +76,7 @@ function buildStatusMessage() {
     duty.is_on_duty
       ? `👔 打卡：上班中（自 ${formatTime(duty.last_toggle_time)}）`
       : `🏖 打卡：已下班（自 ${formatTime(duty.last_toggle_time)}）`,
-    `📡 模式：${useWebhookMode() ? 'Webhook（消息唤醒）' : 'Polling（本地）'}`,
+    `📡 模式：${getTransportMode() === 'webhook' ? 'Webhook' : 'Polling'}`,
   ];
 
   if (apify.isConfigured()) {
@@ -108,22 +120,35 @@ async function safeSend(telegramBot, chatId, text, options = {}) {
   ]);
 }
 
+function createBotInstance() {
+  const enablePolling = isPollingActive();
+  const instance = new TelegramBot(config.telegram.token, {
+    polling: enablePolling
+      ? { interval: 1000, autoStart: true, params: { timeout: 10 } }
+      : false,
+  });
+  if (enablePolling) {
+    instance.on('polling_error', (err) => {
+      console.error('[telegram] polling_error:', err.message);
+    });
+  }
+  return instance;
+}
+
+function resetBot() {
+  if (bot?.isPolling && bot.isPolling()) {
+    bot.stopPolling().catch(() => {});
+  }
+  bot = null;
+  commandsRegistered = false;
+}
+
 function getBot() {
   if (!config.telegram.token) return null;
   if (!bot) {
-    bot = new TelegramBot(config.telegram.token, {
-      polling: !useWebhookMode(),
-    });
-
-    if (!useWebhookMode()) {
-      bot.on('polling_error', (err) => {
-        console.error('[telegram] polling_error:', err.message);
-      });
-    }
-
+    bot = createBotInstance();
     registerCommands(bot);
     touchBotAlive();
-
     if (apify.isConfigured()) {
       setImmediate(() => apify.refreshScheduleCache().catch(() => {}));
     }
@@ -264,18 +289,97 @@ function handleTelegramWebhook(update) {
 
 async function registerTelegramWebhook() {
   const telegramBot = getBot();
-  if (!telegramBot) return;
+  if (!telegramBot) return false;
 
   const url = getWebhookUrl();
-  const options = {};
+  const options = { drop_pending_updates: false };
   if (config.telegram.webhookSecret) {
     options.secret_token = config.telegram.webhookSecret;
   }
 
-  await telegramBot.deleteWebHook({ drop_pending_updates: false });
   await telegramBot.setWebHook(url, options);
-  console.log(`[telegram] Webhook registered: ${url}`);
-  setSetting('telegram_webhook_url', url);
+  const info = await telegramBot.getWebHookInfo();
+  if (!info?.url || !info.url.includes('hostingersite.com')) {
+    throw new Error(`Webhook 未生效，Telegram 返回: ${info?.url || 'empty'}`);
+  }
+
+  console.log(`[telegram] Webhook registered: ${info.url}`);
+  setSetting('telegram_webhook_url', info.url);
+  setSetting('telegram_webhook_error', '');
+  setSetting('telegram_transport', 'webhook');
+  return true;
+}
+
+async function enablePollingFallback(reason) {
+  console.warn('[telegram] 启用 Polling 备用模式:', reason);
+  setSetting('telegram_transport', 'polling');
+  setSetting('telegram_webhook_error', reason);
+  setSetting('telegram_webhook_url', '');
+
+  const telegramBot = getBot();
+  if (telegramBot) {
+    await telegramBot.deleteWebHook({ drop_pending_updates: false }).catch(() => {});
+  }
+  resetBot();
+  getBot();
+  setSetting('telegram_webhook_url', 'polling_active');
+}
+
+async function ensureTelegramActive() {
+  if (!config.telegram.token) return { ok: false, reason: 'no token' };
+
+  if (ensurePromise) return ensurePromise;
+
+  ensurePromise = (async () => {
+    getBot();
+
+    if (getTransportMode() === 'polling') {
+      return { ok: true, mode: 'polling' };
+    }
+
+    const registered = getSetting('telegram_webhook_url');
+    if (registered && registered.startsWith('http')) {
+      return { ok: true, mode: 'webhook', url: registered };
+    }
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        await registerTelegramWebhook();
+        return { ok: true, mode: 'webhook', url: getWebhookUrl() };
+      } catch (err) {
+        console.error(`[telegram] webhook attempt ${attempt}/3:`, err.message);
+        if (attempt < 3) {
+          await new Promise((r) => setTimeout(r, 1500 * attempt));
+        } else {
+          await enablePollingFallback(err.message);
+          return { ok: true, mode: 'polling', fallback: true };
+        }
+      }
+    }
+    return { ok: false };
+  })().finally(() => {
+    ensurePromise = null;
+  });
+
+  return ensurePromise;
+}
+
+async function getTelegramDiagnostics() {
+  const telegramBot = getBot();
+  if (!telegramBot) return { error: 'bot not initialized' };
+  let webhookInfo = null;
+  try {
+    webhookInfo = await telegramBot.getWebHookInfo();
+  } catch (err) {
+    webhookInfo = { error: err.message };
+  }
+  return {
+    transport: getTransportMode(),
+    registered_url: getSetting('telegram_webhook_url') || null,
+    webhook_info: webhookInfo,
+    last_error: getSetting('telegram_webhook_error') || null,
+    is_polling: Boolean(telegramBot.isPolling && telegramBot.isPolling()),
+  };
 }
 
 async function sendJobAlert(job, evaluation) {
@@ -303,19 +407,8 @@ async function startTelegram() {
     console.warn('[telegram] TELEGRAM_BOT_TOKEN not set');
     return;
   }
-
-  getBot();
-
-  if (useWebhookMode()) {
-    try {
-      await registerTelegramWebhook();
-    } catch (err) {
-      console.error('[telegram] setWebHook failed:', err.message);
-    }
-    return;
-  }
-
-  console.log('[telegram] Polling mode (local dev)');
+  const result = await ensureTelegramActive();
+  console.log('[telegram] ready:', JSON.stringify(result));
 }
 
 module.exports = {
@@ -325,4 +418,7 @@ module.exports = {
   handleTelegramWebhook,
   verifyTelegramWebhookSecret,
   useWebhookMode,
+  ensureTelegramActive,
+  getTelegramDiagnostics,
+  getTransportMode,
 };
