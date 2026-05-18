@@ -52,6 +52,7 @@ module.exports = {
   apify: {
     token: process.env.APIFY_TOKEN || '',
     scheduleId: process.env.APIFY_SCHEDULE_ID || '',
+    requestTimeoutMs: num('APIFY_REQUEST_TIMEOUT_MS', 5000),
   },
   telegram: {
     token: process.env.TELEGRAM_BOT_TOKEN || '',
