@@ -55,6 +55,7 @@ module.exports = {
   telegram: {
     token: process.env.TELEGRAM_BOT_TOKEN || '',
     chatId: process.env.TELEGRAM_CHAT_ID || '',
+    webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET || '',
   },
   llm: {
     provider: (process.env.LLM_PROVIDER || 'deepseek').toLowerCase(),

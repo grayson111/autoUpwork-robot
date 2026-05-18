@@ -14,6 +14,8 @@ npm start
 
 Telegram Bot [@MyAutoUpwork_bot](https://t.me/MyAutoUpwork_bot)：先发 `/start` 绑定 Chat ID，再 `/checkin` 上班、`/checkout` 下班、`/status` 查看状态。
 
+**Hostinger 必看：** 共享 Node 会休眠，已改为 **Telegram Webhook 模式**（每条消息由 Telegram `POST` 到你的域名，自动唤醒进程）。部署后配置 `TELEGRAM_WEBHOOK_SECRET`，无需再手动打开 `/health`。
+
 配置 `APIFY_TOKEN` 与 `APIFY_SCHEDULE_ID` 后，`/checkin` 会启用 Apify 定时任务，`/checkout` 会暂停（`PUT /v2/schedules/:id`，`isEnabled`）。
 
 默认 LLM 为 **DeepSeek**（`LLM_PROVIDER=deepseek`），兼容 OpenAI SDK。
