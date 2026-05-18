@@ -19,6 +19,18 @@ const defaultStore = () => ({
   settings: {},
   jobs: {},
   processed_runs: {},
+  webhook_stats: {
+    last: null,
+    totals: {
+      webhooks: 0,
+      runs_processed: 0,
+      dataset_items: 0,
+      jobs_evaluated: 0,
+      jobs_notified: 0,
+      jobs_filtered: 0,
+    },
+    recent: [],
+  },
 });
 
 function readStore() {
@@ -33,6 +45,15 @@ function readStore() {
       settings: parsed.settings || {},
       jobs: parsed.jobs || {},
       processed_runs: parsed.processed_runs || {},
+      webhook_stats: {
+        ...defaultStore().webhook_stats,
+        ...(parsed.webhook_stats || {}),
+        totals: {
+          ...defaultStore().webhook_stats.totals,
+          ...(parsed.webhook_stats?.totals || {}),
+        },
+        recent: parsed.webhook_stats?.recent || [],
+      },
     };
   } catch {
     return defaultStore();
@@ -106,6 +127,58 @@ function isRunProcessed(runId) {
   return Boolean(store.processed_runs?.[runId]);
 }
 
+function getJobsOverview() {
+  purgeExpiredJobs();
+  const jobs = Object.values(readStore().jobs);
+  return {
+    cached: jobs.length,
+    notified_ready: jobs.filter((j) => Number(j.score) >= 8 && j.cover_letter_full).length,
+    avg_score:
+      jobs.length > 0
+        ? (jobs.reduce((s, j) => s + (Number(j.score) || 0), 0) / jobs.length).toFixed(1)
+        : null,
+  };
+}
+
+function recordWebhookStats(summary) {
+  const store = readStore();
+  if (!store.webhook_stats) store.webhook_stats = defaultStore().webhook_stats;
+
+  const entry = {
+    at: new Date().toISOString(),
+    run_id: summary.runId || null,
+    source: summary.source || 'unknown',
+    duplicate: Boolean(summary.skipped && summary.reason === 'duplicate_run'),
+    error: summary.error || null,
+    dataset_items: summary.itemCount ?? summary.dataset_items ?? 0,
+    jobs_parsed: summary.total ?? 0,
+    jobs_notified: summary.notified ?? 0,
+    jobs_filtered: summary.filtered ?? 0,
+    jobs_skipped_duty: summary.skipped_jobs ?? 0,
+    jobs_errors: summary.errors ?? 0,
+    message: summary.message || null,
+  };
+
+  store.webhook_stats.last = entry;
+  const t = store.webhook_stats.totals;
+  t.webhooks = (t.webhooks || 0) + 1;
+  if (!entry.duplicate && !entry.error) {
+    t.runs_processed = (t.runs_processed || 0) + 1;
+    t.dataset_items = (t.dataset_items || 0) + entry.dataset_items;
+    t.jobs_evaluated = (t.jobs_evaluated || 0) + entry.jobs_parsed;
+    t.jobs_notified = (t.jobs_notified || 0) + entry.jobs_notified;
+    t.jobs_filtered = (t.jobs_filtered || 0) + entry.jobs_filtered;
+  }
+  store.webhook_stats.recent = [entry, ...(store.webhook_stats.recent || [])].slice(0, 5);
+  writeStore(store);
+  return entry;
+}
+
+function getWebhookStats() {
+  const store = readStore();
+  return store.webhook_stats || defaultStore().webhook_stats;
+}
+
 function markRunProcessed(runId) {
   const store = readStore();
   if (!store.processed_runs) store.processed_runs = {};
@@ -130,4 +203,7 @@ module.exports = {
   purgeExpiredJobs,
   isRunProcessed,
   markRunProcessed,
+  getJobsOverview,
+  recordWebhookStats,
+  getWebhookStats,
 };

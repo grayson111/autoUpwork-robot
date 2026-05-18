@@ -1,6 +1,19 @@
 const TelegramBot = require('node-telegram-bot-api');
 const config = require('../config');
-const { getDutyStatus, setDutyStatus, getJob, getSetting, setSetting } = require('../db/sqlite');
+const {
+  getDutyStatus,
+  setDutyStatus,
+  getJob,
+  getSetting,
+  setSetting,
+  getWebhookStats,
+  getJobsOverview,
+} = require('../db/sqlite');
+const {
+  formatTime,
+  buildWebhookStatsSection,
+  buildJobsOverviewSection,
+} = require('../utils/statusReport');
 const { buildJobMessage, buildApplyUrl } = require('../utils/telegramFormat');
 const apify = require('./apify');
 
@@ -54,7 +67,7 @@ function registerCommands(telegramBot) {
     }
     await telegramBot.sendMessage(
       msg.chat.id,
-      `Upwork Robot 已连接。\n你的 Chat ID: \`${id}\`\n\n命令：\n/checkin 上班\n/checkout 下班\n/status 状态`,
+      `Upwork Robot 已连接。\n你的 Chat ID: \`${id}\`\n\n命令：\n/checkin 上班\n/checkout 下班\n/status 详细状态（含最近数据条数）`,
       { parse_mode: 'Markdown' }
     );
   });
@@ -87,28 +100,35 @@ function registerCommands(telegramBot) {
     if (!isAuthorizedChat(msg.chat.id)) return;
     const duty = getDutyStatus();
     const lines = [
+      '🤖 Upwork Robot 状态',
+      '',
       duty.is_on_duty
-        ? `当前状态：上班中（自 ${duty.last_toggle_time}）`
-        : `当前状态：已下班（自 ${duty.last_toggle_time}）`,
+        ? `👔 打卡：上班中（自 ${formatTime(duty.last_toggle_time)}）`
+        : `🏖 打卡：已下班（自 ${formatTime(duty.last_toggle_time)}）`,
     ];
 
     if (apify.isConfigured()) {
       try {
         const schedule = await apify.getSchedule();
         if (schedule.configured) {
-          lines.push(
-            `Apify Schedule (${schedule.id}): ${schedule.isEnabled ? '运行中' : '已暂停'}`
-          );
+          lines.push('');
+          lines.push('⏱ Apify 定时调度');
+          lines.push(`Schedule：${schedule.id}`);
+          lines.push(`状态：${schedule.isEnabled ? '✅ 运行中' : '⏸ 已暂停'}`);
           if (schedule.nextRunAt) {
-            lines.push(`下次运行：${schedule.nextRunAt}`);
+            lines.push(`下次运行：${formatTime(schedule.nextRunAt)}`);
           }
         }
       } catch (err) {
-        lines.push(`Apify 状态查询失败：${err.message}`);
+        lines.push(`Apify 查询失败：${err.message}`);
       }
     } else {
-      lines.push('Apify：未配置远程调度（APIFY_TOKEN）');
+      lines.push('');
+      lines.push('⚠️ Apify：未配置 APIFY_TOKEN');
     }
+
+    lines.push(...buildWebhookStatsSection(getWebhookStats()));
+    lines.push(...buildJobsOverviewSection(getJobsOverview()));
 
     await telegramBot.sendMessage(msg.chat.id, lines.join('\n'));
   });

@@ -1,7 +1,7 @@
 const { extractJobsFromPayload } = require('../utils/jobNormalizer');
 const { processJobs } = require('./jobProcessor');
 const apify = require('./apify');
-const { isRunProcessed, markRunProcessed } = require('../db/sqlite');
+const { isRunProcessed, markRunProcessed, recordWebhookStats } = require('../db/sqlite');
 
 async function resolveJobsFromBody(body) {
   let jobs = extractJobsFromPayload(body);
@@ -57,6 +57,7 @@ async function handleWebhookPayload(body) {
     notified: results.filter((r) => r.status === 'notified').length,
     filtered: results.filter((r) => r.status === 'filtered').length,
     skipped_jobs: results.filter((r) => r.status === 'skipped').length,
+    errors: results.filter((r) => r.status === 'error').length,
     results,
   };
 }
@@ -64,8 +65,14 @@ async function handleWebhookPayload(body) {
 function runWebhookInBackground(body) {
   setImmediate(() => {
     handleWebhookPayload(body)
-      .then((summary) => console.log('[webhook] processed:', JSON.stringify(summary)))
-      .catch((err) => console.error('[webhook] background error:', err.message));
+      .then((summary) => {
+        recordWebhookStats(summary);
+        console.log('[webhook] processed:', JSON.stringify(summary));
+      })
+      .catch((err) => {
+        recordWebhookStats({ error: err.message, source: 'error' });
+        console.error('[webhook] background error:', err.message);
+      });
   });
 }
 
