@@ -17,6 +17,14 @@ const {
 const { buildJobMessage, buildApplyUrl } = require('../utils/telegramFormat');
 const apify = require('./apify');
 
+const startedAt = Date.now();
+let bot = null;
+let pollingRestarting = false;
+
+function touchBotAlive() {
+  setSetting('bot_last_alive', new Date().toISOString());
+}
+
 function apifyLine(result, enabledVerb, disabledVerb) {
   if (result.skipped) {
     return '\n⚠️ Apify：未配置 APIFY_TOKEN，仅更新本地打卡状态。';
@@ -55,7 +63,7 @@ function buildStatusMessage() {
       lines.push(...formatScheduleLines(cached, age ? `（缓存 ${age}）` : ''));
     } else {
       lines.push('');
-      lines.push('⏱ Apify：使用 /status 后后台同步调度信息');
+      lines.push('⏱ Apify：调度信息尚未缓存');
     }
   } else {
     lines.push('');
@@ -64,24 +72,9 @@ function buildStatusMessage() {
 
   lines.push(...buildWebhookStatsSection(getWebhookStats()));
   lines.push(...buildJobsOverviewSection(getJobsOverview()));
+  const uptimeMin = Math.floor((Date.now() - startedAt) / 60000);
+  lines.push('', `🟢 进程运行：${uptimeMin} 分钟`);
   return lines.join('\n');
-}
-
-let bot = null;
-const chatLocks = new Map();
-
-function withChatLock(chatId, fn) {
-  const prev = chatLocks.get(chatId) || Promise.resolve();
-  const next = prev.then(fn).catch((err) => {
-    console.error('[telegram] command error:', err.message);
-  });
-  chatLocks.set(
-    chatId,
-    next.finally(() => {
-      if (chatLocks.get(chatId) === next) chatLocks.delete(chatId);
-    })
-  );
-  return next;
 }
 
 function getNotifyChatId() {
@@ -94,6 +87,30 @@ function isAuthorizedChat(msgChatId) {
   return String(msgChatId) === String(allowed);
 }
 
+async function safeSend(telegramBot, chatId, text, options = {}) {
+  const body = text.length > 3900 ? `${text.slice(0, 3900)}\n…(已截断)` : text;
+  return Promise.race([
+    telegramBot.sendMessage(chatId, body, options),
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Telegram 发送超时')), 12000);
+    }),
+  ]);
+}
+
+async function restartPolling(telegramBot) {
+  if (pollingRestarting) return;
+  pollingRestarting = true;
+  try {
+    await telegramBot.stopPolling();
+    await telegramBot.startPolling();
+    console.log('[telegram] polling restarted');
+  } catch (err) {
+    console.error('[telegram] polling restart failed:', err.message);
+  } finally {
+    pollingRestarting = false;
+  }
+}
+
 function getBot() {
   if (!config.telegram.token) return null;
   if (!bot) {
@@ -104,7 +121,15 @@ function getBot() {
         params: { timeout: 10 },
       },
     });
+
+    bot.on('polling_error', (err) => {
+      console.error('[telegram] polling_error:', err.message);
+      restartPolling(bot).catch(() => {});
+    });
+
     registerCommands(bot);
+    touchBotAlive();
+
     if (apify.isConfigured()) {
       setImmediate(() => apify.refreshScheduleCache().catch(() => {}));
     }
@@ -113,123 +138,129 @@ function getBot() {
 }
 
 function registerCommands(telegramBot) {
-  telegramBot.onText(/\/start/, (msg) => {
+  telegramBot.onText(/\/ping/, async (msg) => {
     if (!isAuthorizedChat(msg.chat.id)) return;
-    withChatLock(msg.chat.id, async () => {
-      const id = String(msg.chat.id);
-      if (!config.telegram.chatId) setSetting('telegram_chat_id', id);
-      await telegramBot.sendMessage(
+    touchBotAlive();
+    try {
+      await safeSend(
+        telegramBot,
         msg.chat.id,
-        `Upwork Robot 已连接。\n你的 Chat ID: \`${id}\`\n\n/checkin 上班 · /checkout 下班 · /status 状态`,
-        { parse_mode: 'Markdown' }
+        `🏓 pong\n运行 ${Math.floor((Date.now() - startedAt) / 1000)}s\n${new Date().toISOString()}`
       );
-    });
+    } catch (err) {
+      console.error('[telegram] /ping:', err.message);
+    }
   });
 
-  telegramBot.onText(/\/checkin/, (msg) => {
+  telegramBot.onText(/\/start/, async (msg) => {
     if (!isAuthorizedChat(msg.chat.id)) return;
-    withChatLock(msg.chat.id, async () => {
-      setDutyStatus(true);
-      await telegramBot.sendMessage(
+    touchBotAlive();
+    const id = String(msg.chat.id);
+    if (!config.telegram.chatId) setSetting('telegram_chat_id', id);
+    try {
+      await safeSend(
+        telegramBot,
         msg.chat.id,
-        '✅ 上班打卡成功！正在为您监控项目。\n（Apify 调度同步中…）'
+        `Upwork Robot 已连接。\nChat ID: ${id}\n\n/ping 测活 · /checkin · /checkout · /status`
       );
+    } catch (err) {
+      console.error('[telegram] /start:', err.message);
+    }
+  });
 
-      if (!apify.isConfigured()) {
-        await telegramBot.sendMessage(
-          msg.chat.id,
-          '⚠️ 未配置 APIFY_TOKEN，仅更新本地打卡。'
-        );
-        return;
-      }
+  telegramBot.onText(/\/checkin/, async (msg) => {
+    if (!isAuthorizedChat(msg.chat.id)) return;
+    touchBotAlive();
+    setDutyStatus(true);
+    try {
+      await safeSend(telegramBot, msg.chat.id, '✅ 上班打卡成功！正在监控项目。');
+    } catch (err) {
+      console.error('[telegram] /checkin:', err.message);
+    }
 
+    if (!apify.isConfigured()) return;
+    setImmediate(async () => {
       try {
-        const apifyResult = await apify.resumeSchedule();
-        await telegramBot.sendMessage(msg.chat.id, `🔄 Apify 同步完成${apifyLine(apifyResult, '启用', '暂停')}`);
+        const r = await apify.resumeSchedule();
+        await safeSend(telegramBot, msg.chat.id, `🔄 Apify${apifyLine(r, '启用', '暂停')}`);
       } catch (err) {
-        await telegramBot.sendMessage(
-          msg.chat.id,
-          `⚠️ Apify 启用失败：${err.message}\n（本地已上班）`
-        );
+        await safeSend(telegramBot, msg.chat.id, `⚠️ Apify：${err.message}`).catch(() => {});
       }
     });
   });
 
-  telegramBot.onText(/\/checkout/, (msg) => {
+  telegramBot.onText(/\/checkout/, async (msg) => {
     if (!isAuthorizedChat(msg.chat.id)) return;
-    withChatLock(msg.chat.id, async () => {
-      setDutyStatus(false);
-      await telegramBot.sendMessage(
-        msg.chat.id,
-        '✅ 下班打卡成功！已暂停消息推送。\n（Apify 调度同步中…）'
-      );
+    touchBotAlive();
+    setDutyStatus(false);
+    try {
+      await safeSend(telegramBot, msg.chat.id, '✅ 下班打卡成功！已暂停推送。');
+    } catch (err) {
+      console.error('[telegram] /checkout:', err.message);
+    }
 
-      if (!apify.isConfigured()) {
-        await telegramBot.sendMessage(
-          msg.chat.id,
-          '⚠️ 未配置 APIFY_TOKEN，仅更新本地打卡。'
-        );
-        return;
-      }
-
+    if (!apify.isConfigured()) return;
+    setImmediate(async () => {
       try {
-        const apifyResult = await apify.pauseSchedule();
-        await telegramBot.sendMessage(msg.chat.id, `🔄 Apify 同步完成${apifyLine(apifyResult, '启用', '暂停')}`);
+        const r = await apify.pauseSchedule();
+        await safeSend(telegramBot, msg.chat.id, `🔄 Apify${apifyLine(r, '启用', '暂停')}`);
       } catch (err) {
-        await telegramBot.sendMessage(
-          msg.chat.id,
-          `⚠️ Apify 暂停失败：${err.message}\n（本地已下班）`
-        );
+        await safeSend(telegramBot, msg.chat.id, `⚠️ Apify：${err.message}`).catch(() => {});
       }
     });
   });
 
-  telegramBot.onText(/\/status/, (msg) => {
+  telegramBot.onText(/\/status/, async (msg) => {
     if (!isAuthorizedChat(msg.chat.id)) return;
-    withChatLock(msg.chat.id, async () => {
-      await telegramBot.sendMessage(msg.chat.id, buildStatusMessage());
-
-      if (apify.isConfigured()) {
-        setImmediate(() => {
-          apify.refreshScheduleCache().catch(() => {});
-        });
+    touchBotAlive();
+    try {
+      await safeSend(telegramBot, msg.chat.id, buildStatusMessage());
+    } catch (err) {
+      console.error('[telegram] /status:', err.message);
+      try {
+        await safeSend(telegramBot, msg.chat.id, `❌ 状态生成失败：${err.message}`);
+      } catch (_) {
+        /* ignore */
       }
-    });
+    }
+    if (apify.isConfigured()) {
+      setImmediate(() => apify.refreshScheduleCache().catch(() => {}));
+    }
   });
 
-  telegramBot.on('callback_query', (query) => {
+  telegramBot.on('callback_query', async (query) => {
     const data = query.data || '';
     if (!data.startsWith('copy:')) return;
-    withChatLock(query.message.chat.id, async () => {
-      const jobId = data.slice(5);
-      const job = getJob(jobId);
-      const letter = job?.cover_letter_full;
+    touchBotAlive();
+    const jobId = data.slice(5);
+    const job = getJob(jobId);
+    const letter = job?.cover_letter_full;
+    try {
       await telegramBot.answerCallbackQuery(query.id, {
-        text: letter ? '完整提案已发送到聊天' : '未找到提案',
+        text: letter ? '完整提案已发送' : '未找到提案',
         show_alert: !letter,
       });
       if (letter) {
-        await telegramBot.sendMessage(
+        await safeSend(
           query.message.chat.id,
           `📋 完整 AI 提案 (${jobId}):\n\n${letter}`
         );
       }
-    });
+    } catch (err) {
+      console.error('[telegram] callback:', err.message);
+    }
   });
 }
 
 async function sendJobAlert(job, evaluation) {
   const telegramBot = getBot();
   const notifyChatId = getNotifyChatId();
-  if (!telegramBot || !notifyChatId) {
-    console.warn('[telegram] Bot token or chat id missing, skip push (send /start to bot first)');
-    return;
-  }
+  if (!telegramBot || !notifyChatId) return;
 
   const text = buildJobMessage(job, evaluation);
   const applyUrl = buildApplyUrl(job.job_id, config.baseUrl);
 
-  await telegramBot.sendMessage(notifyChatId, text, {
+  await safeSend(telegramBot, notifyChatId, text, {
     parse_mode: 'MarkdownV2',
     disable_web_page_preview: true,
     reply_markup: {

@@ -1,6 +1,14 @@
 const express = require('express');
 const cors = require('cors');
 const config = require('./config');
+
+process.on('uncaughtException', (err) => {
+  console.error('[fatal] uncaughtException:', err.message, err.stack);
+});
+
+process.on('unhandledRejection', (err) => {
+  console.error('[fatal] unhandledRejection:', err?.message || err);
+});
 const { startTelegram } = require('./services/telegram');
 const { purgeExpiredJobs } = require('./db/sqlite');
 const webhookRouter = require('./routes/webhook');

@@ -21,7 +21,20 @@ function parseLlmJson(text) {
   const start = jsonStr.indexOf('{');
   const end = jsonStr.lastIndexOf('}');
   if (start === -1 || end === -1) throw new Error('LLM response is not JSON');
-  return JSON.parse(jsonStr.slice(start, end + 1));
+  const raw = JSON.parse(jsonStr.slice(start, end + 1));
+  return normalizeEvaluation(raw);
+}
+
+function normalizeEvaluation(raw) {
+  const analysis = raw.analysis || {};
+  return {
+    score: Number(raw.score) || 0,
+    reason_low_effort:
+      raw.reason_low_effort || analysis.effort || analysis.low_effort || '',
+    reason_high_pay: raw.reason_high_pay || analysis.pay || analysis.high_pay || '',
+    cover_letter_preview: raw.cover_letter_preview || raw.telegram_summary || '',
+    cover_letter_full: raw.cover_letter_full || '',
+  };
 }
 
 async function evaluateWithOpenAICompatible(job, { apiKey, baseURL, model }) {

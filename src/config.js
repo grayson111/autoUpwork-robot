@@ -74,4 +74,5 @@ module.exports = {
     maxProposals: num('FILTER_MAX_PROPOSALS', 14),
   },
   jobTtlDays: 7,
+  webhookMaxJobs: num('WEBHOOK_MAX_JOBS', 15),
 };

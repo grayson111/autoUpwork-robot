@@ -71,7 +71,7 @@ function runWebhookInBackground(body) {
       })
       .catch((err) => {
         recordWebhookStats({ error: err.message, source: 'error' });
-        console.error('[webhook] background error:', err.message);
+        console.error('[webhook] background error:', err.message, err.stack);
       });
   });
 }

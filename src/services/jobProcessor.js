@@ -65,9 +65,26 @@ async function processJob(job) {
 }
 
 async function processJobs(jobs) {
+  const max = config.webhookMaxJobs || 15;
+  const batch = jobs.slice(0, max);
+  if (jobs.length > max) {
+    console.warn(`[jobs] truncating ${jobs.length} jobs to ${max} per webhook`);
+  }
   const results = [];
-  for (const job of jobs) {
-    results.push(await processJob(job));
+  for (const job of batch) {
+    try {
+      results.push(await processJob(job));
+    } catch (err) {
+      console.error(`[jobs] ${job.job_id}:`, err.message);
+      results.push({ job_id: job.job_id, status: 'error', reason: err.message });
+    }
+  }
+  if (jobs.length > max) {
+    results.push({
+      job_id: '_truncated',
+      status: 'skipped',
+      reason: `${jobs.length - max} jobs skipped (WEBHOOK_MAX_JOBS=${max})`,
+    });
   }
   return results;
 }
